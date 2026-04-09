@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anthropic 文章中文总结：长时运行应用开发中的 Harness Design</title>
+  <style>
+    :root {
+      --paper: #f4efe4;
+      --paper-strong: #e9dec7;
+      --ink: #1e2a2b;
+      --ink-soft: #4d5b5d;
+      --accent: #0e6466;
+      --accent-soft: rgba(14, 100, 102, 0.12);
+      --accent-strong: #083f40;
+      --signal: #b65a3c;
+      --card: rgba(255, 252, 245, 0.88);
+      --border: rgba(30, 42, 43, 0.12);
+      --shadow: 0 22px 60px rgba(18, 35, 36, 0.12);
+      --max-width: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      background:
+        radial-gradient(circle at top left, rgba(182, 90, 60, 0.15), transparent 28%),
+        radial-gradient(circle at 85% 10%, rgba(14, 100, 102, 0.14), transparent 24%),
+        linear-gradient(180deg, #f8f4ea 0%, var(--paper) 45%, #efe7d7 100%);
+      line-height: 1.75;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(30, 42, 43, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30, 42, 43, 0.02) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 88%);
+    }
+
+    a {
+      color: var(--accent-strong);
+    }
+
+    .page {
+      width: min(var(--max-width), calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 64px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 42px;
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      background:
+        linear-gradient(145deg, rgba(255, 250, 240, 0.92), rgba(244, 239, 228, 0.82)),
+        linear-gradient(90deg, rgba(14, 100, 102, 0.08), transparent);
+      box-shadow: var(--shadow);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -120px;
+      top: -100px;
+      width: 320px;
+      height: 320px;
+      border-radius: 26% 74% 64% 36% / 36% 39% 61% 64%;
+      background: linear-gradient(180deg, rgba(14, 100, 102, 0.18), rgba(182, 90, 60, 0.12));
+      transform: rotate(18deg);
+    }
+
+    .eyebrow {
+      position: relative;
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 14px;
+      border-radius: 999px;
+      background: rgba(255, 252, 245, 0.82);
+      border: 1px solid rgba(14, 100, 102, 0.16);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    h1, h2, h3 {
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      letter-spacing: -0.02em;
+      margin: 0;
+    }
+
+    h1 {
+      position: relative;
+      z-index: 1;
+      max-width: 760px;
+      margin-top: 18px;
+      font-size: clamp(2.3rem, 5vw, 4.45rem);
+      line-height: 1.02;
+    }
+
+    .lead {
+      position: relative;
+      z-index: 1;
+      max-width: 760px;
+      margin: 18px 0 0;
+      font-size: 1.12rem;
+      color: var(--ink-soft);
+    }
+
+    .hero-meta {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-top: 28px;
+    }
+
+    .meta-card {
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255, 252, 245, 0.72);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(6px);
+    }
+
+    .meta-card strong {
+      display: block;
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      font-size: 0.86rem;
+      color: var(--ink-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .meta-card span {
+      display: block;
+      margin-top: 6px;
+      font-size: 1.04rem;
+    }
+
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      margin: 28px 0 20px;
+    }
+
+    .toc a {
+      display: block;
+      padding: 14px 16px;
+      border-radius: 16px;
+      text-decoration: none;
+      background: var(--card);
+      border: 1px solid var(--border);
+      box-shadow: 0 10px 30px rgba(18, 35, 36, 0.06);
+      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .toc a:hover {
+      transform: translateY(-2px);
+      border-color: rgba(14, 100, 102, 0.28);
+      background: #fffdf8;
+    }
+
+    .section {
+      margin-top: 28px;
+      padding: 30px;
+      border-radius: 26px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      box-shadow: 0 16px 36px rgba(18, 35, 36, 0.08);
+    }
+
+    .section h2 {
+      font-size: clamp(1.55rem, 3vw, 2.2rem);
+      margin-bottom: 12px;
+    }
+
+    .section-intro {
+      margin: 0 0 18px;
+      color: var(--ink-soft);
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
+    .card {
+      padding: 20px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(249, 245, 236, 0.88));
+    }
+
+    .card h3 {
+      margin-bottom: 10px;
+      font-size: 1.08rem;
+    }
+
+    .card p,
+    .card li,
+    .section p,
+    .section li {
+      font-size: 1rem;
+    }
+
+    ul {
+      margin: 12px 0 0 18px;
+      padding: 0;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .quote {
+      padding: 18px 20px;
+      border-left: 4px solid var(--signal);
+      background: rgba(182, 90, 60, 0.07);
+      border-radius: 0 16px 16px 0;
+      color: #453b37;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 16px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid var(--border);
+    }
+
+    .timeline-item strong {
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      color: var(--accent);
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .architecture .node {
+      position: relative;
+      padding: 22px 20px;
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(14, 100, 102, 0.08), rgba(255, 255, 255, 0.75));
+    }
+
+    .architecture .node::before {
+      content: attr(data-step);
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(14, 100, 102, 0.1);
+      color: var(--accent);
+      font-size: 0.8rem;
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      letter-spacing: 0.04em;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+      background: rgba(255, 255, 255, 0.62);
+    }
+
+    th,
+    td {
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid rgba(30, 42, 43, 0.1);
+      vertical-align: top;
+    }
+
+    th {
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+      font-size: 0.92rem;
+      background: rgba(14, 100, 102, 0.09);
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      font-size: 0.92rem;
+      font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+    }
+
+    .footer {
+      margin-top: 28px;
+      padding: 24px 28px;
+      border-radius: 22px;
+      background: rgba(30, 42, 43, 0.93);
+      color: rgba(244, 239, 228, 0.92);
+    }
+
+    .footer p {
+      margin: 0;
+      color: rgba(244, 239, 228, 0.8);
+    }
+
+    .footer a {
+      color: #d6f3f3;
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(var(--max-width), calc(100% - 18px));
+        padding-top: 14px;
+      }
+
+      .hero,
+      .section,
+      .footer {
+        padding: 22px;
+      }
+
+      .timeline-item {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Anthropic Engineering / 中文阅读版</div>
+      <h1>长时运行应用开发中的 Harness Design</h1>
+      <p class="lead">
+        这是一份基于 Anthropic 工程文章《Harness design for long-running application development》的中文总结与分析页面。
+        它不是逐段直译，而是把文章的论点、案例、方法和启发压缩成更适合中文读者快速吸收的一页式阅读稿。
+      </p>
+
+      <div class="hero-meta">
+        <div class="meta-card">
+          <strong>原文发布日期</strong>
+          <span>2026 年 3 月 24 日</span>
+        </div>
+        <div class="meta-card">
+          <strong>文章核心</strong>
+          <span>Harness 设计如何提升 Agent 编码表现</span>
+        </div>
+        <div class="meta-card">
+          <strong>关键方法</strong>
+          <span>Planner / Generator / Evaluator 多代理协作</span>
+        </div>
+        <div class="meta-card">
+          <strong>阅读重点</strong>
+          <span>何时加结构，何时删结构</span>
+        </div>
+      </div>
+    </section>
+
+    <nav class="toc" aria-label="页面目录">
+      <a href="#summary">一句话总结</a>
+      <a href="#problem">为什么朴素方案会失效</a>
+      <a href="#frontend">前端设计实验</a>
+      <a href="#fullstack">扩展到全栈开发</a>
+      <a href="#cases">案例与成本对比</a>
+      <a href="#insights">我的分析与启发</a>
+    </nav>
+
+    <section class="section" id="summary">
+      <h2>一句话总结</h2>
+      <p class="section-intro">
+        这篇文章的核心观点不是“多智能体一定更强”，而是：当任务处在模型能力边界附近时，合理的 harness 能显著提高完成质量；但随着模型变强，旧的 scaffold 会变成负担，所以 harness 必须持续被简化、重构、重估。
+      </p>
+
+      <div class="grid three">
+        <article class="card">
+          <h3>文章要解决什么</h3>
+          <p>
+            Anthropic 想解决两个看似不同、实则相关的问题：一是让 Claude 产出更有审美和原创性的前端设计；二是让 Claude 在几小时级别的长时间自主开发中，持续稳定地构建完整应用。
+          </p>
+        </article>
+        <article class="card">
+          <h3>作者的关键发现</h3>
+          <p>
+            单靠“一个 agent 从头干到尾”很容易在长任务里失去连贯性，也很不擅长评价自己。把“生成”和“评估”拆开，再配合结构化交接和可执行的检查标准，质量会明显提升。
+          </p>
+        </article>
+        <article class="card">
+          <h3>真正重要的结论</h3>
+          <p>
+            Harness 不是固定模板，而是一套随着模型能力移动的“支架系统”。模型提升后，原本必要的结构可能不再必要；但新的更高难任务，也会催生新的 harness 组合。
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="problem">
+      <h2>为什么朴素方案会失效</h2>
+      <p class="section-intro">
+        文中先解释了为什么“直接让一个模型长时间工作”经常不靠谱，主要有两个问题。
+      </p>
+
+      <div class="grid two">
+        <article class="card">
+          <h3>1. 长任务中的上下文退化</h3>
+          <p>
+            随着上下文窗口越来越满，模型容易丢失连贯性，甚至出现作者所说的 “context anxiety”：
+            明明工作还没做好，却因为担心上下文快到极限而提前收尾。早期方案通过 context reset 来解决，让新 agent 继承结构化交接文档继续干活。
+          </p>
+        </article>
+        <article class="card">
+          <h3>2. 自我评价天然偏宽松</h3>
+          <p>
+            让模型评估自己时，它往往会过度乐观，尤其在设计这类主观任务上更明显。即使是有可验证结果的软件任务，模型也常常会发现问题后又“说服自己问题不大”，导致 QA 形同虚设。
+          </p>
+        </article>
+      </div>
+
+      <div class="quote" style="margin-top:18px;">
+        文章最重要的思路转折在这里：与其逼生成器学会严厉地否定自己，不如单独训练一个更怀疑、更挑剔的评估器。这样生成器才能获得真正可执行的外部反馈。
+      </div>
+    </section>
+
+    <section class="section" id="frontend">
+      <h2>前端设计实验：把主观审美变成可评分对象</h2>
+      <p class="section-intro">
+        作者先在前端设计上做实验，因为这里最容易暴露“模型自评太宽松”的问题。默认情况下，Claude 会做出安全、可用、但不出彩的页面。
+      </p>
+
+      <div class="architecture">
+        <article class="node" data-step="Step 1">
+          <h3>Generator 先产出页面</h3>
+          <p>
+            根据用户提示生成 HTML / CSS / JS 前端界面。它不仅要实现功能，还要尝试建立明确的视觉风格和情绪。
+          </p>
+        </article>
+        <article class="node" data-step="Step 2">
+          <h3>Evaluator 进入页面打分</h3>
+          <p>
+            评估器通过 Playwright 直接操作真实页面，而不是只看静态截图。它会浏览、截图、检查，再按标准给出细颗粒度反馈。
+          </p>
+        </article>
+        <article class="node" data-step="Step 3">
+          <h3>多轮反馈驱动风格进化</h3>
+          <p>
+            生成器根据反馈决定继续打磨当前方向，还是彻底换一种美学路线。一个完整循环通常要跑 5 到 15 轮，最长可达 4 小时。
+          </p>
+        </article>
+      </div>
+
+      <div class="grid two" style="margin-top:18px;">
+        <article class="card">
+          <h3>四个评分标准</h3>
+          <ul>
+            <li><strong>设计质量：</strong>整体是否统一，是否形成独特气质，而不是零碎拼贴。</li>
+            <li><strong>原创性：</strong>有没有真实设计决策，还是在复用模板、库默认样式和典型 AI 套路。</li>
+            <li><strong>工艺：</strong>排版、间距、配色、对比度这些基础是否扎实。</li>
+            <li><strong>功能性：</strong>用户是否能看懂界面、找到主操作、顺利完成任务。</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>为什么这组标准有效</h3>
+          <p>
+            作者刻意把“设计质量”和“原创性”权重拉高，因为模型天生在功能和工艺上已经不差，真正缺的是审美风险和个性化表达。换句话说，评分机制本身就在把模型从“AI 套壳感”往“更像设计师作品”推。
+          </p>
+        </article>
+      </div>
+
+      <div class="timeline">
+        <div class="timeline-item">
+          <strong>早期输出</strong>
+          <div>页面通常功能正确，但视觉保守、套路明显，像“合格模板”而不是“有记忆点的设计”。</div>
+        </div>
+        <div class="timeline-item">
+          <strong>中期迭代</strong>
+          <div>评估器开始逼生成器改掉泛化套路，页面逐渐出现更明确的视觉语言和更大胆的结构。</div>
+        </div>
+        <div class="timeline-item">
+          <strong>代表性突破</strong>
+          <div>在“荷兰艺术博物馆”案例中，模型从常规深色落地页，突然跃迁到一个用 CSS 透视做出的 3D 展厅空间，这是作者此前单次生成里没见过的创造性跳跃。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="fullstack">
+      <h2>扩展到全栈开发：从设计打分到软件工程流程</h2>
+      <p class="section-intro">
+        在验证“生成器 + 评估器”模式有效后，作者把它迁移到完整应用开发场景，并形成了更成熟的三代理结构。
+      </p>
+
+      <div class="grid three">
+        <article class="card">
+          <h3>Planner</h3>
+          <p>
+            接收 1 到 4 句简短需求，把它扩展成完整产品规格。作者刻意让 Planner 停留在产品和高层技术设计层面，不提前写死底层实现，以免错误设计向后级联。
+          </p>
+        </article>
+        <article class="card">
+          <h3>Generator</h3>
+          <p>
+            按 feature 或 sprint 实现应用，使用 React、Vite、FastAPI、SQLite / PostgreSQL 等技术栈，并在每轮结束后先做一次自检，再提交给 QA。
+          </p>
+        </article>
+        <article class="card">
+          <h3>Evaluator</h3>
+          <p>
+            用 Playwright 像真实用户一样点击应用，检查 UI、API、数据库状态，再按照功能深度、视觉设计、代码质量等标准打分。任何一项低于阈值，该轮就算失败。
+          </p>
+        </article>
+      </div>
+
+      <div class="quote" style="margin-top:18px;">
+        文中一个很值得借鉴的细节是 “sprint contract”。每次开发前，生成器和评估器要先协商这一轮到底交付什么、如何验证算完成。这个动作把模糊规格转成可测试契约，极大降低了“做了很多但做偏了”的风险。
+      </div>
+
+      <div class="badge-row">
+        <span class="badge">文件作为代理之间的通信介质</span>
+        <span class="badge">先定完成标准，再开始写代码</span>
+        <span class="badge">QA 不只看界面，还查 API 和数据库</span>
+        <span class="badge">结构化交接比单纯压缩对话更稳</span>
+      </div>
+    </section>
+
+    <section class="section" id="cases">
+      <h2>案例与成本对比</h2>
+      <p class="section-intro">
+        文章用了两个案例来证明 harness 的收益，同时也很诚实地展示了它的代价：时间长、成本高、而且不是所有任务都值得这么做。
+      </p>
+
+      <h3 style="margin-top:0;">案例一：复古游戏制作器 RetroForge</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>方案</th>
+              <th>时长</th>
+              <th>成本</th>
+              <th>结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>单 Agent</td>
+              <td>20 分钟</td>
+              <td>9 美元</td>
+              <td>表面上像能用，但真正试玩时核心玩法不工作，实体出现了却无法响应输入。</td>
+            </tr>
+            <tr>
+              <td>完整 Harness</td>
+              <td>6 小时</td>
+              <td>200 美元</td>
+              <td>功能范围更大、界面更完整、游戏可实际运行，还集成了 AI 生成内容能力，但仍存在流程引导和边角体验问题。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid two" style="margin-top:18px;">
+        <article class="card">
+          <h3>Harness 在这里提升了什么</h3>
+          <ul>
+            <li>Planner 把一句话需求扩成了 16 个功能点、10 个 sprint。</li>
+            <li>Evaluator 在合同级别追踪验收条件，能给出非常具体的 bug 定位。</li>
+            <li>最终成品不只是“看起来像应用”，而是核心交互真的能跑起来。</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Evaluator 抓到的典型问题</h3>
+          <ul>
+            <li>矩形填充工具实际上没有填满矩形区域。</li>
+            <li>删除实体的条件判断写错，导致点选后删不掉。</li>
+            <li>FastAPI 路由顺序导致重排接口被错误匹配，返回 422。</li>
+          </ul>
+        </article>
+      </div>
+
+      <h3 style="margin-top:28px;">案例二：浏览器 DAW（数字音频工作站）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>阶段</th>
+              <th>时长</th>
+              <th>成本</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Planner</td>
+              <td>4.7 分钟</td>
+              <td>0.46 美元</td>
+            </tr>
+            <tr>
+              <td>Build Round 1</td>
+              <td>2 小时 7 分钟</td>
+              <td>71.08 美元</td>
+            </tr>
+            <tr>
+              <td>QA Round 1</td>
+              <td>8.8 分钟</td>
+              <td>3.24 美元</td>
+            </tr>
+            <tr>
+              <td>Build Round 2</td>
+              <td>1 小时 2 分钟</td>
+              <td>36.89 美元</td>
+            </tr>
+            <tr>
+              <td>QA Round 2</td>
+              <td>6.8 分钟</td>
+              <td>3.09 美元</td>
+            </tr>
+            <tr>
+              <td>Build Round 3</td>
+              <td>10.9 分钟</td>
+              <td>5.88 美元</td>
+            </tr>
+            <tr>
+              <td>QA Round 3</td>
+              <td>9.6 分钟</td>
+              <td>4.06 美元</td>
+            </tr>
+            <tr>
+              <td><strong>总计</strong></td>
+              <td><strong>3 小时 50 分钟</strong></td>
+              <td><strong>124.70 美元</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        这个阶段有一个很关键的变化：随着 Opus 4.6 变强，作者开始移除原本的 sprint 结构，让生成器一次性跑更长时间，只在末尾加入 QA 回合。结论并不是“Evaluator 永远必要”，而是：
+        当任务刚好落在模型单独完成的能力边界之外时，Evaluator 的投入很值；如果任务已经被模型稳稳覆盖，那么它就会变成额外开销。
+      </p>
+    </section>
+
+    <section class="section" id="insights">
+      <h2>我的分析与启发</h2>
+      <div class="grid two">
+        <article class="card">
+          <h3>1. 这篇文章真正谈的是“外部化判断”</h3>
+          <p>
+            很多人读这类文章会把重点放在多 agent 数量上，但更核心的其实是把“判断标准”和“验收逻辑”从生成过程里剥离出来。模型可以负责创造，但不能同时担任自己最苛刻的审稿人。
+          </p>
+        </article>
+        <article class="card">
+          <h3>2. Contract 是工程落地的关键桥梁</h3>
+          <p>
+            从模糊产品需求到可验证实现，中间最容易断层。作者用 sprint contract 填上了这道缝，这比单纯给一个更长的 prompt 更像真正的软件工程流程。
+          </p>
+        </article>
+        <article class="card">
+          <h3>3. 评分标准会反过来塑造输出风格</h3>
+          <p>
+            文中提到一句类似“最好的设计像博物馆级别作品”的措辞，会让页面朝某类审美收敛。这提醒我们：评估体系不是中性的，它本身就携带价值观，会影响生成结果的分布。
+          </p>
+        </article>
+        <article class="card">
+          <h3>4. Harness 不是越复杂越好</h3>
+          <p>
+            作者在后半段反复强调，任何一个结构组件都只是对“模型当前做不到什么”的假设。一旦模型变强，这个组件就要重新接受审查。能删就删，删不掉的才是 load-bearing。
+          </p>
+        </article>
+      </div>
+
+      <div class="grid two" style="margin-top:18px;">
+        <article class="card">
+          <h3>适合借鉴到实际项目的四条做法</h3>
+          <ul>
+            <li>先写出可评分标准，不要只写“做得更好看”“做得更完整”。</li>
+            <li>让生成和验收分离，尤其在设计、产品和 QA 环节。</li>
+            <li>把交接材料写成结构化文件，而不是依赖长对话记忆。</li>
+            <li>每次模型升级后，都要重新测试哪些 harness 组件还值不值保留。</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>这套方法的现实边界</h3>
+          <ul>
+            <li>成本高，不适合低价值、短周期、低风险任务。</li>
+            <li>评估器也会犯错，需要持续用真实失败案例校准。</li>
+            <li>对“品味”“常识”“听感”这类主观能力，模型仍有明显上限。</li>
+            <li>如果验收指标定义不对，系统会朝错误方向稳定优化。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>
+        原文链接：
+        <a href="https://www.anthropic.com/engineering/harness-design-long-running-apps" target="_blank" rel="noreferrer">
+          Harness design for long-running application development
+        </a>
+        。本页内容为中文总结与分析整理版，重点在于帮助快速理解原文方法论与工程启发。
+      </p>
+    </footer>
+  </main>
+</body>
+</html>
